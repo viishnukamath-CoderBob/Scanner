@@ -380,18 +380,22 @@ function renderReview(main) {
   };
 }
 
+// ===== excel export (used by the Leads tab for every user, and by the Admin tab) =====
+async function doExport(btn) { btn.disabled = true; const t = btn.textContent; btn.innerHTML = '<span class="spin"></span> Preparing…'; try { const n = await exportXlsx(); toast(`Exported ${n} lead${n === 1 ? '' : 's'}`); } catch (e) { toast(e.message || 'Export failed', true); } btn.disabled = false; btn.textContent = t; }
+
 // ===== leads tab =====
 function renderLeads() {
   const F = state.filter;
   $('#main').innerHTML = `<div class="card"><div class="row"><input class="grow" id="q" type="search" placeholder="Search name, company, email, notes" value="${esc(F.q)}">
     <select id="ft" class="grow"><option value="">All topics</option>${state.topics.map((t) => `<option value="${esc(t.id)}" ${F.topic === t.id ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}</select>
     <select id="fh" class="grow"><option value="">All temps</option>${['Hot', 'Warm', 'Cold'].map((t) => `<option ${F.temperature === t ? 'selected' : ''}>${t}</option>`).join('')}</select>
-    <label class="sw" style="margin:0"><input type="checkbox" id="fm" style="width:auto" ${F.mine ? 'checked' : ''}> Mine only</label></div></div>
+    <label class="sw" style="margin:0"><input type="checkbox" id="fm" style="width:auto" ${F.mine ? 'checked' : ''}> Mine only</label><button class="btn sec" id="xlL">Export Excel</button></div></div>
     <div id="pending" class="pending" style="display:none"></div><div class="card" id="ll"></div>`;
   $('#q').oninput = (e) => { F.q = e.target.value; paintLeads(); };
   $('#ft').onchange = (e) => { F.topic = e.target.value; paintLeads(); };
   $('#fh').onchange = (e) => { F.temperature = e.target.value; paintLeads(); };
   $('#fm').onchange = (e) => { F.mine = e.target.checked; paintLeads(); };
+  $('#xlL').onclick = () => doExport($('#xlL'));
   updatePending(); paintLeads();
 }
 function filtered() {
