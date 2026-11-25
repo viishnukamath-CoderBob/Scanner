@@ -1,25 +1,25 @@
 # Lead Capture – GitHub-only version
 
-Just static files. No server, no database, no Google, no Render.
+Just static files. No server, no database, no accounts, no passwords.
 
 ## Put it live (about 3 minutes)
 1. On GitHub, create a new repository (Public).
-2. Click **Add file → Upload files** and drag in **everything inside this folder** (`index.html`, `app.js`, `backend.js`, `style.css`, `sw.js`, `manifest.webmanifest`, `icon.svg`, `.nojekyll` and the `vendor` folder). Commit.
-   - If the `vendor` folder or `.nojekyll` file won't drag in, use **Add file → Create new file**, type `.nojekyll` as the name and commit. For `vendor`, upload it on its own.
+2. Upload **everything inside this folder** (`index.html`, `app.js`, `backend.js`, `style.css`, `sw.js`, `manifest.webmanifest`, `icon.svg` and the `vendor` folder) so that `index.html` is at the top level of the repo, not inside a subfolder. Commit.
 3. **Settings → Pages → Build and deployment → Deploy from a branch → `main` → `/ (root)` → Save.**
 4. After about a minute your link is `https://<your-username>.github.io/<repo-name>/`. It is HTTPS, so the camera works.
 
-## First use
-1. Open the link. The first person to open it **on a device** chooses a username and password: that becomes the admin for that device.
-2. **Admin → Add user** to create booth logins; **Admin** also manages topics.
-3. Pick a topic, scan the nametag, check the name and company, choose Hot / Warm / Cold, add notes, save, scan the next person.
-4. **Admin → Export Excel (.xlsx)** downloads the leads.
+## Using it
+1. Open the link. It asks for **your name once** (saved on that phone, added to every lead).
+2. Pick a demo topic → scan the nametag (or **Enter manually**) → check name and company → Hot / Warm / Cold + notes → **Save lead & scan next**.
+3. **Leads** tab: search, filter, edit or delete. **Export Excel** downloads the leads as `.xlsx`.
+4. **Dashboard** tab: totals by temperature, topic; add / rename / disable topics; Export Excel.
+5. Tap your name (top right) to change it. Tap the topic chip, or **← Change topic**, to switch topic.
 
 ## Important limitation – read this
-GitHub Pages only serves files. It cannot store data. So **leads are saved in the browser of the device that captured them**:
-- Phones do **not** share data with each other, and there is no live sync between devices.
-- Each device has its own admin, users and topics.
-- Clearing browser data on that device deletes its leads. **Export to Excel before the end of the day.**
-- Use the same phone and browser each time; a private/incognito tab does not keep data.
+GitHub Pages only serves files; it cannot store data. So **leads are saved in the browser of the phone that captured them**:
+- Phones do **not** share data with each other and there is no live sync between devices.
+- Each phone has its own topics list.
+- Clearing browser data on a phone deletes its leads. **Export to Excel at the end of every day.**
+- Use the same browser each time; a private/incognito tab does not keep data.
 
-If several people must see one combined list, you need a shared backend (the Render or Google Sheets versions).
+To get one combined list, collect each phone's exported `.xlsx` and paste the rows into one sheet. If you need all phones to share one live list, you need a shared backend (the Render or Google Sheets versions).

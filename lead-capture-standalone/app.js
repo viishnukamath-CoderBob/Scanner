@@ -20,20 +20,11 @@ const uuid = () => (crypto.randomUUID ? crypto.randomUUID() : 'id-' + Date.now()
 // ===== state =====
 const state = { user: null, topics: [], topicId: store.get('topic', null), tab: 'scan', leads: [], live: false,
   scan: { phase: 'scan', data: null }, filter: { q: '', topic: '', temperature: '', mine: false } };
-function sessionLost() {
-  if (!state.user) return;
-  state.user = null; stopCamera(); stopSync(); store.del('user');
-  renderLogin('Your session expired. Please sign in again.');
-}
-window.onSessionLost = sessionLost;
-
 // ===== boot =====
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 (async function boot() {
-  if (!configured) { app.innerHTML = `<div class="login"><img class="logo" src="icon.svg" alt=""><h1>Lead Capture</h1><div class="card"><p class="err">This app is not configured yet.</p><p class="muted">Open <code>config.js</code> and paste your Google Apps Script Web app URL (see README), then reload.</p></div></div>`; return; }
   if (!hasToken()) { renderLogin(); return; }
-  try { state.user = await api('/me'); await afterLogin(); }
-  catch (e) { if (e instanceof NetErr && store.get('user')) { state.user = store.get('user'); state.topics = store.get('topics', []); renderShell(); startLive(); flushQueue(); } else renderLogin(); }
+  try { state.user = await api('/me'); await afterLogin(); } catch (e) { renderLogin(); }
 })();
 
 async function afterLogin() {
@@ -48,36 +39,36 @@ async function loadTopics() {
   if (state.topicId && !state.topics.some((t) => t.id === state.topicId)) { state.topicId = null; store.del('topic'); }
 }
 
-// ===== login =====
-function renderLogin(msg) {
+// ===== name screen (once per device; no accounts, no passwords) =====
+function renderLogin() {
+  const cur = state.user ? state.user.name : '';
   app.innerHTML = `<div class="login"><img class="logo" src="icon.svg" alt=""><h1>Lead Capture</h1>
-    <form class="card" id="lf"><label for="u">Username</label><input id="u" autocomplete="username" autocapitalize="none" autocorrect="off" required>
-    <label for="p">Password</label><input id="p" type="password" autocomplete="current-password" required>
-    ${firstRun() ? '<p class="muted">First time on this device: choose a username and password (8+ characters). This creates the <b>admin</b> account for this device.</p>' : ''}<p class="err" id="le">${esc(msg || '')}</p><button class="btn block" id="lb">${firstRun() ? 'Create admin & start' : 'Sign in'}</button></form></div>`;
+    <form class="card" id="lf"><label for="u">Your name</label><input id="u" autocomplete="name" value="${esc(cur)}" required maxlength="80">
+    <p class="muted">Saved on this phone and added to every lead you capture. Leads stay on this device &mdash; use Export Excel to save them.</p>
+    <p class="err" id="le"></p><button class="btn block" id="lb">Start</button></form></div>`;
+  $('#u').focus();
   $('#lf').onsubmit = async (e) => {
     e.preventDefault(); const b = $('#lb'); b.disabled = true; $('#le').textContent = '';
-    try { state.user = await api('/login', { method: 'POST', body: { username: $('#u').value, password: $('#p').value } }); await afterLogin(); }
+    try { state.user = await api('/login', { method: 'POST', body: { name: $('#u').value } }); await afterLogin(); }
     catch (err) { $('#le').textContent = err.message; b.disabled = false; }
   };
 }
 
 // ===== shell =====
 function renderShell() {
-  const isAdmin = state.user.role === 'admin';
   const topic = state.topics.find((t) => t.id === state.topicId);
   app.innerHTML = `<header class="top"><span class="live ${state.live ? 'on' : ''}" id="live" title="Live sync"></span>
     <h1>Lead Capture</h1>${topic ? `<button class="chip" id="chTopic">${esc(topic.name)}</button>` : ''}
     <button class="chip" id="chUser">${esc(state.user.name)}</button></header>
     <main id="main"></main>
-    <nav class="tabs"><button data-tab="scan">Scan</button><button data-tab="leads">Leads</button>${isAdmin ? '<button data-tab="admin">Admin</button>' : ''}</nav>`;
+    <nav class="tabs"><button data-tab="scan">Scan</button><button data-tab="leads">Leads</button><button data-tab="admin">Dashboard</button></nav>`;
   document.querySelectorAll('nav.tabs button').forEach((b) => (b.onclick = () => setTab(b.dataset.tab)));
   const ct = $('#chTopic'); if (ct) ct.onclick = changeTopic;
-  $('#chUser').onclick = accountModal;
+  $('#chUser').onclick = () => { stopCamera(); stopSync(); renderLogin(); };
   setTab(state.tab, true);
 }
 function changeTopic() { stopCamera(); state.topicId = null; store.del('topic'); state.scan = { phase: 'scan', data: null }; state.tab = 'scan'; renderShell(); }
 function setTab(tab, force) {
-  if (tab === 'admin' && state.user.role !== 'admin') tab = 'scan';
   if (tab !== 'scan') stopCamera();
   state.tab = tab;
   document.querySelectorAll('nav.tabs button').forEach((b) => b.classList.toggle('on', b.dataset.tab === tab));
@@ -96,23 +87,6 @@ function modal(html, mount) {
   mount(o, () => o.remove());
   return o;
 }
-function accountModal() {
-  modal(`<h2>${esc(state.user.name)}</h2><p class="muted">@${esc(state.user.username)} · ${esc(state.user.role)}</p>
-    <label>Current password</label><input type="password" id="cp" autocomplete="current-password">
-    <label>New password (min 8 chars)</label><input type="password" id="np" autocomplete="new-password">
-    <p class="err" id="pe"></p><div class="row"><button class="btn sec grow" id="chg">Change password</button><button class="btn danger grow" id="lo">Sign out</button></div>`,
-    (o, close) => {
-      $('#chg', o).onclick = async () => {
-        try { await api('/password', { method: 'POST', body: { current: $('#cp', o).value, next: $('#np', o).value } }); toast('Password updated'); close(); }
-        catch (e) { $('#pe', o).textContent = e.message; }
-      };
-      $('#lo', o).onclick = async () => {
-        try { await api('/logout', { method: 'POST' }); } catch {}
-        close(); stopCamera(); stopSync(); state.user = null; store.del('user'); renderLogin();
-      };
-    });
-}
-
 // ===== near-real-time sync (polls a version counter; full data only when something changed) =====
 let seenLeads = null, topicsSig = '';
 function startLive() {
@@ -124,7 +98,7 @@ function startLive() {
       state.leads = r.leads; seenLeads = new Set(r.leads.map((l) => l.id));
       if (prev && state.tab !== 'scan') {
         const fresh = r.leads.find((l) => !prev.has(l.id) && l.user_id !== state.user.id);
-        if (fresh) toast(`New ${fresh.temperature} lead: ${fresh.name || fresh.email || fresh.company}`);
+        if (fresh) toast(`New ${fresh.temperature} lead: ${fresh.name || fresh.company}`);
       }
       const sig = JSON.stringify(r.topics);
       const topicsChanged = sig !== topicsSig; topicsSig = sig;
@@ -133,7 +107,7 @@ function startLive() {
         if (state.topicId && !state.topics.some((t) => t.id === state.topicId && t.active !== 0)) { state.topicId = null; store.del('topic'); }
       }
       if (state.tab === 'leads') paintLeads();
-      else if (state.tab === 'admin') { loadAdminStats(); loadUsers(); if (topicsChanged) paintTopics(); }
+      else if (state.tab === 'admin') { loadAdminStats(); if (topicsChanged) paintTopics(); }
       else if (state.tab === 'scan' && topicsChanged && !state.topicId) renderScan();
     },
   });
@@ -161,7 +135,6 @@ setInterval(() => { if (state.user && getQ().length) flushQueue(); }, 15000);
 // ===== nametag text parsing =====
 // Badge layout (top → bottom): UBS Forums logo / "Powered by IBM" / "IBM FlashSystem –" / "INDIA REVEAL" /
 // Firstname / Lastname / ── divider ── / Company Name
-const EMAIL_RE = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/;
 const HEADER_KEYS = ['ubsforums', 'forums', 'presents', 'poweredby', 'flashsystem', 'indiareveal', 'reveal', 'indiare'];
 const squash = (s) => s.toLowerCase().replace(/[^a-z]/g, '');
 const cleanLine = (s) => s.replace(/[|_~=«»<>\[\]{}\\\/*#^`"“”]/g, ' ').replace(/[^\p{L}\p{N}&.,'’()+\- ]/gu, ' ').replace(/\s+/g, ' ').replace(/^[\s.,'’\-–]+|[\s,'’\-–]+$/g, '').trim();
@@ -169,7 +142,7 @@ const titleCase = (s) => (s === s.toUpperCase() && /[A-Z]{3,}/.test(s) ? s.toLow
 
 // lines: [{text, conf, top, bottom}]  (pixel coordinates in the OCR image)
 function parseNametag(lines) {
-  const out = { name: '', company: '', title: '', email: '', phone: '' };
+  const out = { name: '', company: '' };
   let L = lines.map((l) => ({ ...l, text: cleanLine(l.text) })).filter((l) => l.text).sort((a, b) => a.top - b.top);
   // 1) drop everything at/above the last event-header line
   let cut = -1;
@@ -304,7 +277,7 @@ function renderScan() {
   }
   capBtn.onclick = captureNow;
   $('#chg').onclick = changeTopic;
-  $('#man').onclick = () => { stopCamera(); state.scan = { phase: 'review', data: { name: '', company: '', title: '', email: '', phone: '' }, raw: '', source: 'manual' }; renderScan(); };
+  $('#man').onclick = () => { stopCamera(); state.scan = { phase: 'review', data: { name: '', company: '' }, raw: '', source: 'manual' }; renderScan(); };
 
   getOcr().then(() => alive() && !busy && setMsg('Fit the nametag inside the frame')).catch((e) => alive() && setMsg(e.message, true));
   if (!ocrWorker) setMsg('Loading text reader (first time only)…');
@@ -341,18 +314,17 @@ function leadFormHTML(d, { topicSelect, temp, notes } = {}) {
   const f = (id, label, val, attrs = '') => `<div><label for="f_${id}">${label}</label><input id="f_${id}" value="${esc(val)}" ${attrs}></div>`;
   return `${topicSelect ? `<label for="f_topic">Demo topic</label><select id="f_topic">${state.topics.map((t) => `<option value="${esc(t.id)}" ${t.id === topicSelect ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}</select>` : ''}
     <div class="grid2">${f('name', 'Name', d.name, 'autocomplete="off"')}${f('company', 'Company', d.company, 'autocomplete="off"')}
-    ${f('title', 'Job title', d.title, 'autocomplete="off"')}${f('phone', 'Phone', d.phone, 'type="tel" inputmode="tel"')}</div>
-    ${f('email', 'Email', d.email, 'type="email" inputmode="email" autocapitalize="none"')}
+    </div>
     <label>Lead temperature</label><div class="temps" id="temps">${['Hot', 'Warm', 'Cold'].map((t) => `<button type="button" data-t="${t}" class="${temp === t ? 'on' : ''}">${t}</button>`).join('')}</div>
     <label for="f_notes">Notes</label><textarea id="f_notes" placeholder="Interests, follow-up actions…">${esc(notes || '')}</textarea>`;
 }
 function bindTemps(root, get, set) { root.querySelectorAll('#temps button').forEach((b) => (b.onclick = () => { set(b.dataset.t); root.querySelectorAll('#temps button').forEach((x) => x.classList.toggle('on', x === b)); })); }
-const readForm = (root) => ({ name: $('#f_name', root).value.trim(), company: $('#f_company', root).value.trim(), title: $('#f_title', root).value.trim(), phone: $('#f_phone', root).value.trim(), email: $('#f_email', root).value.trim(), notes: $('#f_notes', root).value.trim() });
+const readForm = (root) => ({ name: $('#f_name', root).value.trim(), company: $('#f_company', root).value.trim(), notes: $('#f_notes', root).value.trim() });
 
 function renderReview(main) {
   const { data, raw, source, img } = state.scan; let temp = '';
-  const dup = (data.email || data.name) && state.leads.find((l) => l.topic_id === state.topicId && (data.email ? l.email.toLowerCase() === data.email.toLowerCase() : squash(l.name) === squash(data.name) && squash(l.company) === squash(data.company)));
-  const empty = !data.name && !data.email && !data.company && !data.phone;
+  const dup = data.name && state.leads.find((l) => l.topic_id === state.topicId && squash(l.name) === squash(data.name) && squash(l.company) === squash(data.company));
+  const empty = !data.name && !data.company;
   main.innerHTML = `<div class="card"><h2>Review lead</h2>
     ${source === 'manual' ? '' : empty ? `<p class="err">Couldn't read the nametag clearly — please type the name and company below, or go back and retry.</p>` : `<p class="muted">Read from the nametag. Please check the name and company and correct if needed.</p>`}
     ${img ? `<img src="${img}" alt="Captured nametag" style="width:100%;max-height:200px;object-fit:contain;background:#fff;border:1px solid var(--line);border-radius:10px;margin:6px 0">` : ''}
@@ -366,8 +338,7 @@ function renderReview(main) {
   $('#save').onclick = async () => {
     const v = readForm(main), err = $('#fe');
     if (!temp) { err.textContent = 'Select Hot, Warm or Cold.'; return; }
-    if (!v.name && !v.email && !v.company && !v.phone) { err.textContent = 'Enter at least a name, company, email or phone.'; return; }
-    if (v.email && !EMAIL_RE.test(v.email)) { err.textContent = 'Email looks invalid.'; return; }
+    if (!v.name && !v.company) { err.textContent = 'Enter at least a name or company.'; return; }
     const body = { ...v, temperature: temp, topic_id: state.topicId, source, raw_text: raw || '', client_id: uuid() };
     const btn = $('#save'); btn.disabled = true; btn.innerHTML = '<span class="spin"></span> Saving…';
     try { const lead = await api('/leads', { method: 'POST', body }); if (!state.leads.some((l) => l.id === lead.id)) state.leads.unshift(lead); toast('Lead saved ✓'); syncNow(); }
@@ -386,7 +357,7 @@ async function doExport(btn) { btn.disabled = true; const t = btn.textContent; b
 // ===== leads tab =====
 function renderLeads() {
   const F = state.filter;
-  $('#main').innerHTML = `<div class="card"><div class="row"><input class="grow" id="q" type="search" placeholder="Search name, company, email, notes" value="${esc(F.q)}">
+  $('#main').innerHTML = `<div class="card"><div class="row"><input class="grow" id="q" type="search" placeholder="Search name, company, notes" value="${esc(F.q)}">
     <select id="ft" class="grow"><option value="">All topics</option>${state.topics.map((t) => `<option value="${esc(t.id)}" ${F.topic === t.id ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}</select>
     <select id="fh" class="grow"><option value="">All temps</option>${['Hot', 'Warm', 'Cold'].map((t) => `<option ${F.temperature === t ? 'selected' : ''}>${t}</option>`).join('')}</select>
     <label class="sw" style="margin:0"><input type="checkbox" id="fm" style="width:auto" ${F.mine ? 'checked' : ''}> Mine only</label><button class="btn sec" id="xlL">Export Excel</button></div></div>
@@ -401,12 +372,12 @@ function renderLeads() {
 function filtered() {
   const F = state.filter, q = F.q.toLowerCase();
   return state.leads.filter((l) => (!F.topic || l.topic_id === F.topic) && (!F.temperature || l.temperature === F.temperature) && (!F.mine || l.user_id === state.user.id) &&
-    (!q || [l.name, l.company, l.email, l.notes, l.phone].some((x) => (x || '').toLowerCase().includes(q))));
+    (!q || [l.name, l.company, l.notes].some((x) => (x || '').toLowerCase().includes(q))));
 }
 function leadRow(l) {
-  const can = l.user_id === state.user.id || state.user.role === 'admin';
-  return `<div class="lead"><span class="badge ${l.temperature}">${l.temperature}</span><div class="info"><div class="nm">${esc(l.name || l.email || l.company || '(no name)')}</div>
-    <div class="sub">${esc([l.title, l.company].filter(Boolean).join(' · '))}</div><div class="sub">${esc([l.email, l.phone].filter(Boolean).join(' · '))}</div>
+  const can = true;
+  return `<div class="lead"><span class="badge ${l.temperature}">${l.temperature}</span><div class="info"><div class="nm">${esc(l.name || l.company || '(no name)')}</div>
+    <div class="sub">${esc(l.company)}</div>
     ${l.notes ? `<div class="nt">${esc(l.notes)}</div>` : ''}<div class="sub" style="margin-top:4px"><span class="tag">${esc(l.topic)}</span>${esc(l.captured_by)} · ${esc(fmtTime(l.created_at))}</div></div>
     ${can ? `<button class="btn sec sm" data-edit="${esc(l.id)}">Edit</button>` : ''}</div>`;
 }
@@ -439,23 +410,16 @@ async function renderAdmin() {
   main.innerHTML = `<div class="card"><div class="row"><h2 style="margin:0;flex:1">Dashboard</h2><button class="btn" id="xl">Export Excel (.xlsx)</button></div></div>
     <div id="stats"></div>
     <div class="card"><h2>Demo topics</h2><div id="tl"></div><div class="row" style="margin-top:10px"><input class="grow" id="nt" placeholder="New topic name"><button class="btn" id="at">Add topic</button></div></div>
-    <div class="card"><h2>Users</h2><div class="tablewrap" id="ul"></div>
-    <h2 style="margin-top:18px">Add user</h2><div class="grid2"><div><label>Full name</label><input id="nn"></div><div><label>Username</label><input id="nu" autocapitalize="none"></div>
-    <div><label>Temporary password (min 8)</label><input id="np2" type="text" autocomplete="off"></div><div><label>Role</label><select id="nr"><option value="user">User</option><option value="admin">Admin</option></select></div></div>
-    <p class="err" id="ue"></p><button class="btn" id="au">Create user</button></div>`;
+`;
   $('#xl').onclick = async () => { const b = $('#xl'); b.disabled = true; const t = b.textContent; b.innerHTML = '<span class="spin"></span> Preparing…'; try { const n = await exportXlsx(); toast(`Exported ${n} lead${n === 1 ? '' : 's'}`); } catch (e) { toast(e.message || 'Export failed', true); } b.disabled = false; b.textContent = t; };
   $('#at').onclick = async () => {
     const name = $('#nt').value.trim(); if (!name) return;
     try { await api('/admin/topics', { method: 'POST', body: { name } }); $('#nt').value = ''; await loadTopics(); paintTopics(); toast('Topic added'); } catch (e) { toast(e.message, true); }
   };
-  $('#au').onclick = async () => {
-    try { await api('/admin/users', { method: 'POST', body: { name: $('#nn').value, username: $('#nu').value, password: $('#np2').value, role: $('#nr').value } }); ['nn', 'nu', 'np2'].forEach((i) => ($('#' + i).value = '')); $('#ue').textContent = ''; toast('User created'); loadUsers(); }
-    catch (e) { $('#ue').textContent = e.message; }
-  };
-  await loadTopics(true); paintTopics(); loadUsers(); loadAdminStats();
+  await loadTopics(true); paintTopics(); loadAdminStats();
 }
 async function loadTopics(all) {
-  try { state.topics = await api('/topics' + (all && state.user.role === 'admin' && state.tab === 'admin' ? '?all=1' : '')); store.set('topics', state.topics.filter((t) => t.active !== 0)); } catch { state.topics = store.get('topics', []); }
+  try { state.topics = await api('/topics' + (all && state.tab === 'admin' ? '?all=1' : '')); store.set('topics', state.topics.filter((t) => t.active !== 0)); } catch { state.topics = store.get('topics', []); }
   if (state.topicId && !state.topics.some((t) => t.id === state.topicId && t.active !== 0)) { state.topicId = null; store.del('topic'); }
 }
 function paintTopics() {
@@ -464,15 +428,6 @@ function paintTopics() {
     <button class="btn sec sm" data-ren="${esc(t.id)}">Rename</button><button class="btn sec sm" data-tog="${esc(t.id)}">${Number(t.active) ? 'Disable' : 'Enable'}</button></div>`).join('');
   el.querySelectorAll('[data-ren]').forEach((b) => (b.onclick = async () => { const t = state.topics.find((x) => x.id === b.dataset.ren); const name = prompt('Rename topic', t.name); if (!name) return; try { await api('/admin/topics/' + t.id, { method: 'PUT', body: { name } }); await loadTopics(true); paintTopics(); } catch (e) { toast(e.message, true); } }));
   el.querySelectorAll('[data-tog]').forEach((b) => (b.onclick = async () => { const t = state.topics.find((x) => x.id === b.dataset.tog); try { await api('/admin/topics/' + t.id, { method: 'PUT', body: { active: !Number(t.active) } }); await loadTopics(true); paintTopics(); } catch (e) { toast(e.message, true); } }));
-}
-async function loadUsers() {
-  try {
-    const us = await api('/admin/users'); const el = $('#ul'); if (!el) return;
-    el.innerHTML = `<table><tr><th>Name</th><th>Username</th><th>Role</th><th>Leads</th><th></th></tr>${us.map((u) => `<tr style="${Number(u.active) ? '' : 'opacity:.5'}"><td>${esc(u.name)}</td><td>${esc(u.username)}</td><td>${esc(u.role)}</td><td>${Number(u.lead_count)}</td>
-      <td style="white-space:nowrap"><button class="btn sec sm" data-pw="${esc(u.id)}">Reset password</button> ${u.id === state.user.id ? '' : `<button class="btn sec sm" data-act="${esc(u.id)}" data-v="${Number(u.active) ? 0 : 1}">${Number(u.active) ? 'Disable' : 'Enable'}</button>`}</td></tr>`).join('')}</table>`;
-    el.querySelectorAll('[data-pw]').forEach((b) => (b.onclick = async () => { const p = prompt('New password (min 8 characters)'); if (!p) return; try { await api('/admin/users/' + b.dataset.pw, { method: 'PUT', body: { password: p } }); toast('Password reset'); } catch (e) { toast(e.message, true); } }));
-    el.querySelectorAll('[data-act]').forEach((b) => (b.onclick = async () => { try { await api('/admin/users/' + b.dataset.act, { method: 'PUT', body: { active: b.dataset.v === '1' } }); loadUsers(); } catch (e) { toast(e.message, true); } }));
-  } catch (e) { toast(e.message, true); }
 }
 async function loadAdminStats() {
   try {
