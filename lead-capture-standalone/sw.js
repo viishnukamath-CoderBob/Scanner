@@ -1,5 +1,5 @@
 // Network-first for the app shell so updates roll out immediately; cached copy is used when offline. Apps Script calls (other origin) are never cached.
-const CACHE = 'leadcap-static-v3';
+const CACHE = 'leadcap-static-v4';
 const SHELL = ['./', 'index.html', 'style.css', 'app.js', 'backend.js', 'manifest.webmanifest', 'icon.svg'];
 self.addEventListener('install', (e) => { e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting())); });
 self.addEventListener('activate', (e) => {

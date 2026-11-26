@@ -140,30 +140,35 @@ const squash = (s) => s.toLowerCase().replace(/[^a-z]/g, '');
 const cleanLine = (s) => s.replace(/[|_~=«»<>\[\]{}\\\/*#^`"“”]/g, ' ').replace(/[^\p{L}\p{N}&.,'’()+\- ]/gu, ' ').replace(/\s+/g, ' ').replace(/^[\s.,'’\-–]+|[\s,'’\-–]+$/g, '').trim();
 const titleCase = (s) => (s === s.toUpperCase() && /[A-Z]{3,}/.test(s) ? s.toLowerCase().replace(/(^|[\s'’(-])(\p{L})/gu, (m, a, b) => a + b.toUpperCase()) : s);
 
+// Badge layout (top to bottom): event header + logos | FIRST NAME | LAST NAME | gradient divider | COMPANY.
 // lines: [{text, conf, top, bottom}]  (pixel coordinates in the OCR image)
+const fixName = (t) => titleCase(t).replace(/(^|[\s\-'’])l(?=[a-z]{2,})/g, '$1I');   // OCR often reads a capital I as a lowercase l
 function parseNametag(lines) {
-  const out = { name: '', company: '' };
+  const out = { name: '', company: '', sure: false };
   let L = lines.map((l) => ({ ...l, text: cleanLine(l.text) })).filter((l) => l.text).sort((a, b) => a.top - b.top);
-  // 1) drop everything at/above the last event-header line
+  // 1) drop everything at/above the last event-header line (logos, "IBM FlashSystem –", "INDIA REVEAL")
   let cut = -1;
   L.forEach((l, i) => { const q = squash(l.text); if (q.length >= 5 && HEADER_KEYS.some((k) => q.includes(k))) cut = i; });
   if (cut >= 0) L = L.slice(cut + 1);
   // 2) drop noise (logo fragments, low confidence, too short)
-  L = L.filter((l) => /\p{L}{2,}/u.test(l.text) && l.conf >= 35 && (l.bottom - l.top) > 8);
+  L = L.filter((l) => (/\p{L}{2,}/u.test(l.text) || /^\p{L}[&+]\p{L}$|^\p{N}\p{L}+$/u.test(l.text)) && l.conf >= 35 && (l.bottom - l.top) > 8);
+  if (cut < 0 && L.length > 4) L = L.slice(-4);          // header not recognised: name + company are always the last lines
   if (!L.length) return out;
   const hmax = Math.max(...L.map((l) => l.bottom - l.top));
   L = L.filter((l) => l.bottom - l.top >= hmax * 0.4);
-  // 3) split name | company at the largest vertical gap (the divider rule sits there)
-  let split;
-  if (L.length === 1) split = 1;
-  else if (L.length === 2) split = 1;
-  else {
-    let best = -1, bi = 1;
-    for (let i = 1; i < L.length; i++) { const g = L[i].top - L[i - 1].bottom; if (g > best) { best = g; bi = i; } }
-    split = Math.min(bi, 2);                      // name is at most 2 lines (first + last)
-  }
-  out.name = titleCase(L.slice(0, split).map((l) => l.text).join(' '));
-  out.company = titleCase(L.slice(split, split + 2).map((l) => l.text).join(' '));
+  // 3) split name | company at the biggest vertical gap (the divider rule sits there); the name is at most 2 lines
+  const gap = (i) => L[i].top - L[i - 1].bottom;
+  const avgH = L.reduce((a, l) => a + (l.bottom - l.top), 0) / L.length;
+  let split = 1, best = -1;
+  for (let i = 1; i < L.length; i++) if (gap(i) > best) { best = gap(i); split = i; }
+  if (L.length >= 2 && best < avgH * 0.4) split = Math.min(2, L.length);         // no divider gap seen
+  split = Math.min(split, 2);
+  const nameLines = L.slice(0, split), compLines = L.slice(split, split + 2);
+  out.name = fixName(nameLines.map((l) => l.text).join(' '));
+  out.company = compLines.map((l) => l.text).join(' ');                           // keep the company exactly as printed
+  // "sure": first + last name on two lines, then a clearly larger gap (the divider), then the company line(s)
+  const g1 = L.length > 1 ? gap(1) : 0;
+  out.sure = nameLines.length === 2 && compLines.length >= 1 && gap(2) >= Math.max(g1 * 1.6, avgH * 0.4);
   return out;
 }
 
@@ -234,14 +239,39 @@ function grabFrame(video, box, frame) {
   cctx.putImageData(img, 0, 0);
   return canvas;
 }
+// Build text lines from individual words: only words containing letters count, so the gradient divider,
+// logo fragments and the wave graphic can never distort the line positions.
+function wordsToLines(data) {
+  const words = [];
+  for (const b of data.blocks || []) for (const p of b.paragraphs || []) for (const l of p.lines || []) {
+    const ws = l.words && l.words.length ? l.words : [l];
+    for (const w of ws) words.push({ text: (w.text || '').trim(), conf: w.confidence ?? 0, x0: w.bbox.x0, top: w.bbox.y0, bottom: w.bbox.y1 });
+  }
+  const ok = words.filter((w) => (/\p{L}/u.test(w.text) || /^[&+]$/.test(w.text)) && w.bottom - w.top > 4).sort((a, b) => a.top + a.bottom - (b.top + b.bottom));
+  const lines = [];
+  for (const w of ok) {
+    const h = w.bottom - w.top;
+    const ln = lines.find((l) => Math.min(w.bottom, l.bottom) - Math.max(w.top, l.top) > 0.5 * Math.min(h, l.bottom - l.top));
+    if (ln) { ln.words.push(w); ln.top = Math.min(ln.top, w.top); ln.bottom = Math.max(ln.bottom, w.bottom); } else lines.push({ top: w.top, bottom: w.bottom, words: [w] });
+  }
+  return lines.map((l) => { l.words.sort((a, b) => a.x0 - b.x0); return { text: l.words.map((w) => w.text).join(' '), conf: l.words.reduce((a, w) => a + w.conf, 0) / l.words.length, top: l.top, bottom: l.bottom }; });
+}
+async function ocrPass(w, c, psm) {
+  await w.setParameters({ tessedit_pageseg_mode: psm });
+  const { data } = await w.recognize(c, {}, { blocks: true, text: true });
+  return { parsed: parseNametag(wordsToLines(data)), text: data.text || '' };
+}
+const scoreRead = (p) => (p.sure ? 3 : p.name && p.company ? 2 : p.name ? 1 : 0);
 async function readNametag(video, box, frame) {
   const c = grabFrame(video, box, frame); if (!c) return null;
   const w = await getOcr();
-  const { data } = await w.recognize(c, {}, { blocks: true, text: true });
-  const lines = [];
-  for (const b of data.blocks || []) for (const p of b.paragraphs || []) for (const l of p.lines || [])
-    lines.push({ text: l.text || '', conf: l.confidence ?? 0, top: l.bbox.y0, bottom: l.bbox.y1 });
-  return { parsed: parseNametag(lines), text: data.text || '', img: c.toDataURL('image/jpeg', 0.6) };
+  let best = null;
+  for (const psm of ['6', '3', '11']) {                       // 6 = one block, 3 = automatic, 11 = sparse text; stop as soon as the layout is confirmed
+    const r = await ocrPass(w, c, psm);
+    if (!best || scoreRead(r.parsed) > scoreRead(best.parsed)) best = r;
+    if (best.parsed.sure) break;
+  }
+  return { parsed: best.parsed, text: best.text, img: c.toDataURL('image/jpeg', 0.6) };
 }
 
 // ===== scan tab =====
@@ -293,7 +323,7 @@ function renderScan() {
         const r = await readNametag(video, box, frame);
         if (!alive() || !scanning) { busy = false; return; }
         const p = r && r.parsed, key = p ? squash(p.name) : '';
-        if (p && p.name && p.company && /\p{L}{2}/u.test(p.name)) {
+        if (p && p.sure && /\p{L}{2}/u.test(p.name)) {
           if (key === lastSaved.key.split('|')[0] && Date.now() - lastSaved.t < 20000) { msg.textContent = 'Already captured — show the next nametag'; prev = ''; }
           else if (key === prev) { busy = false; return accept(r, false); }   // same result twice in a row = confident
           else { prev = key; msg.textContent = 'Reading… hold steady'; }
